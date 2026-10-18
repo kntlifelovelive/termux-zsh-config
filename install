@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Termux Zsh Config installer — copy-based, Termux-only.
+# Usage: ./install
+#
+# This installer is dedicated to native Android Termux. It does NOT support
+# desktop Linux distributions, and it does not require the reference repo.
+set -u
+
+# ------------------------------------------------------------------ palette
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[34m'
+CYAN='\033[36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+err()   { printf '%bERROR:%b %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
+warn()  { printf '%bWARN:%b %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+ok()    { printf '      %b✓%b %s\n' "$GREEN" "$RESET" "$1"; }
+info()  { printf '      %b%s%b\n' "$DIM" "$1" "$RESET"; }
+stage() { printf '\n%b[%s]%b %b%s%b\n' "$BOLD$CYAN" "$1" "$RESET" "$BOLD" "$2" "$RESET"; }
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$SCRIPT_DIR/zsh"
+SRC_ZSHENV="$SCRIPT_DIR/.zshenv"
+
+# Required package: only zsh is strictly required by the configuration.
+# Optional packages are listed separately and are never installed automatically.
+REQUIRED_CMDS=(zsh)
+OPTIONAL_CMDS=(git curl fzf zoxide eza bat ripgrep fd micro vim procps)
+
+# Map a command name to its Termux package name.
+pkg_for() {
+    case "$1" in
+        zsh)        echo zsh ;;
+        git)        echo git ;;
+        curl)       echo curl ;;
+        fzf)        echo fzf ;;
+        zoxide)     echo zoxide ;;
+        eza)        echo eza ;;
+        bat)        echo bat ;;
+        ripgrep)    echo rg ;;
+        fd)         echo fd-find ;;
+        micro)      echo micro ;;
+        vim)        echo vim ;;
+        procps)     echo procps ;;
+        *)          echo "$1" ;;
+    esac
+}
+
+# --------------------------------------------------------------- [1/6] Termux
+stage "1/6" "Verifying Termux environment..."
+
+is_termux=0
+[[ -n "${TERMUX_VERSION:-}" ]]         && is_termux=1
+[[ -d /data/data/com.termux ]]         && is_termux=1
+command -v pkg >/dev/null 2>&1         && is_termux=1
+
+if [[ $is_termux -eq 0 ]]; then
+    err "This installer is for native Termux only. Not running in Termux."
+fi
+
+[[ -n "${HOME:-}" && "$HOME" == /* && "$HOME" != "/" ]] ||
+    err "HOME is not set to a valid user directory."
+(( EUID != 0 )) ||
+    err "Run the installer as a normal user, not as root."
+
+ok "Termux environment detected"
+
+# ----------------------------------------------------------- [2/6] Dependencies
+stage "2/6" "Checking dependencies..."
+
+missing_required=()
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    command -v "$cmd" >/dev/null 2>&1 || missing_required+=("$(pkg_for "$cmd")")
+done
+
+missing_optional=()
+for cmd in "${OPTIONAL_CMDS[@]}"; do
+    command -v "$cmd" >/dev/null 2>&1 || missing_optional+=("$(pkg_for "$cmd")")
+done
+
+# Install only missing required packages. Never run 'pkg upgrade'.
+if [[ ${#missing_required[@]} -gt 0 ]]; then
+    info "Installing required packages: ${missing_required[*]}"
+    pkg install -y "${missing_required[@]}" ||
+        err "Package installation failed: ${missing_required[*]}"
+fi
+
+# Verify required packages (fail loudly — never fake a PASS).
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    command -v "$cmd" >/dev/null 2>&1 ||
+        err "$cmd ($(pkg_for "$cmd")) is required but unavailable after installation."
+done
+ok "Required packages present: ${REQUIRED_CMDS[*]}"
+
+# Optional packages: report but never install automatically.
+if [[ ${#missing_optional[@]} -gt 0 ]]; then
+    warn "Optional packages not installed: ${missing_optional[*]}"
+    info "Install them later with: pkg install ${missing_optional[*]}"
+    info "The configuration works without them — every feature is guarded."
+else
+    ok "Optional packages present: ${OPTIONAL_CMDS[*]}"
+fi
+
+# ------------------------------------------------------- [3/6] Validate source
+stage "3/6" "Validating source configuration..."
+
+src_fail=0
+src_count=0
+while IFS= read -r f; do
+    src_count=$((src_count + 1))
+    if ! zsh -n "$f" 2>/dev/null; then
+        echo "ERROR: Configuration validation failed: $f" >&2
+        src_fail=1
+    fi
+done < <(find "$SRC_DIR" \( -name '*.zsh' -o -name '.zshrc' \) -type f)
+(( src_fail == 0 )) || exit 1
+ok "Source OK ($src_count files passed zsh -n)"
+
+# --------------------------------------------------- [4/6] Backup + copy
+stage "4/6" "Creating backup and installing..."
+
+TARGET="$HOME/.config/zsh"
+BACKUP="(none — no existing configuration)"
+stamp="$(date +%Y%m%d-%H%M%S)"
+
+if [[ -e "$HOME/.zshenv" || -e "$TARGET" ]]; then
+    BACKUP="$HOME/.config/zsh-backup-$stamp"
+    n=1
+    while [[ -e "$BACKUP" ]]; do
+        n=$((n + 1))
+        BACKUP="$HOME/.config/zsh-backup-$stamp-$n"
+    done
+    mkdir -p "$BACKUP" || err "Could not create backup directory."
+    if [[ -e "$HOME/.zshenv" ]]; then
+        cp -a "$HOME/.zshenv" "$BACKUP/.zshenv" || err "Backup of .zshenv failed."
+    fi
+    if [[ -e "$TARGET" ]]; then
+        cp -a "$TARGET" "$BACKUP/zsh" || err "Backup of config dir failed."
+    fi
+    ok "Backup created: $BACKUP"
+else
+    info "No existing configuration — backup not needed"
+fi
+
+# Copy-based install (never symlinks): stage first, then activate.
+mkdir -p "$HOME/.config" || err "Could not create ~/.config."
+STAGE="$HOME/.config/.zsh-new.$$"
+rm -rf "$STAGE"
+cp -a "$SRC_DIR" "$STAGE" || { rm -rf "$STAGE"; err "Copy failed."; }
+rm -rf "$TARGET"
+mv "$STAGE" "$TARGET" || err "Could not activate configuration."
+cp -a "$SRC_ZSHENV" "$HOME/.zshenv" || err "Could not write ~/.zshenv."
+
+ok "Installed: $TARGET"
+ok "Installed: $HOME/.zshenv"
+
+# ----------------------------------------------- [5/6] Validate installed
+stage "5/6" "Validating installed configuration..."
+
+inst_fail=0
+inst_count=0
+while IFS= read -r f; do
+    inst_count=$((inst_count + 1))
+    if ! zsh -n "$f" 2>/dev/null; then
+        echo "ERROR: Configuration validation failed: $f" >&2
+        inst_fail=1
+    fi
+done < <(find "$TARGET" \( -name '*.zsh' -o -name '.zshrc' -o -name '.zshenv' \) -type f)
+# Also validate the deployed .zshenv.
+if [[ -f "$HOME/.zshenv" ]] && ! zsh -n "$HOME/.zshenv" 2>/dev/null; then
+    echo "ERROR: Configuration validation failed: $HOME/.zshenv" >&2
+    inst_fail=1
+    inst_count=$((inst_count + 1))
+fi
+(( inst_fail == 0 )) || exit 1
+ok "zsh -n passed ($inst_count installed files)"
+
+# Non-blocking startup test (stdin from /dev/null so it can never block).
+startup_err="$(env -u ZDOTDIR timeout 30 zsh -lic 'exit' </dev/null 2>&1 >/dev/null)"
+startup_rc=$?
+if [[ $startup_rc -ne 0 ]] || [[ -n "$startup_err" ]]; then
+    [[ -z "$startup_err" ]] || printf '%s\n' "$startup_err" >&2
+    err "Startup test failed (RC=$startup_rc)."
+fi
+ok "Startup test passed (RC=0, stderr empty)"
+
+# ----------------------------------------------------------------- [6/6] Done
+stage "6/6" "Complete"
+echo
+printf '  %bConfig :%b %s\n' "$BOLD" "$RESET" "$TARGET"
+printf '  %bZshenv :%b %s\n' "$BOLD" "$RESET" "$HOME/.zshenv"
+printf '  %bBackup :%b %s\n' "$BOLD" "$RESET" "$BACKUP"
+echo
+info "Restore procedure:"
+info "  cp -a \"$BACKUP/.zshenv\" \"$HOME/.zshenv\""
+info "  cp -a \"$BACKUP/zsh\" \"$HOME/.config/zsh\""
+echo
+info "Start a new zsh session to use the configuration."
+info "Optional packages: pkg install ${OPTIONAL_CMDS[*]}"
+echo
+info "The installer does NOT change your default shell. Use 'chsh -s zsh' manually if desired."
+exit 0

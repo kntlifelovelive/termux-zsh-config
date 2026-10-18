@@ -1,0 +1,6 @@
+# Runtime artifacts — never commit (history leak / regenerates at startup)
+zsh/.zhistory
+zsh/.zcompdump*
+
+# Installer backups created outside the repository
+/config/zsh-backup-*
