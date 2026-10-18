@@ -32,20 +32,23 @@ The installer:
 1. Verifies it is running in native Termux (stops safely otherwise).
 2. Installs missing **required** packages via `pkg install`
    (`zsh`, `git`, `eza`, `fzf`, `zoxide`, `micro`).
-3. Never runs `pkg upgrade`.
-4. Backs up any existing `$HOME/.zshenv` and `$HOME/.config/zsh/` to a
+3. Installs the Zsh plugin files (`zsh-syntax-highlighting`,
+   `zsh-autosuggestions`, `zsh-system-clipboard`) via Git into
+   `$HOME/.zsh/plugins/`.
+4. Never runs `pkg upgrade`.
+5. Backs up any existing `$HOME/.zshenv` and `$HOME/.config/zsh/` to a
    timestamped `$HOME/.config/zsh-backup-<stamp>/`.
-5. Copies (never symlinks) the configuration into place.
-6. Validates the installed files with `zsh -n` and runs a startup test.
-7. Optionally sets Zsh as your default login shell (with your confirmation).
-8. Prints success or failure messages and explains how to restore.
+6. Copies (never symlinks) the configuration into place.
+7. Validates the installed files with `zsh -n` and runs a startup test.
+8. Optionally sets Zsh as your default login shell (with your confirmation).
+9. Prints success or failure messages and explains how to restore.
 
 ## Packages
 
 **Required (installed automatically if missing):**
 
 - `zsh` — the shell itself
-- `git` — prompt git integration + git aliases
+- `git` — needed to clone the plugin files
 - `eza` — default `ls` replacement (aliases `e`, `ea`, `el`, …)
 - `fzf` — default file/folder finder keybindings (Ctrl+T / Ctrl+F)
 - `zoxide` — default smarter-`cd` (`z` integration)
@@ -54,14 +57,34 @@ The installer:
 **Optional (install manually, never installed automatically):**
 
 ```bash
-pkg install curl bat ripgrep fd-find vim procps
+pkg install curl bat ripgrep fd-find vim procps termux-api
 ```
+
+`termux-api` is required for `zsh-system-clipboard` (Android clipboard
+integration via `termux-clipboard-get` / `termux-clipboard-set`).
 
 Each optional feature is guarded on its command existing, so the
 configuration starts fine even when none of the optional tools are installed.
 
 Correct Termux package names are used (e.g. `rg` for ripgrep,
 `fd-find` for fd).
+
+## Plugins
+
+The following Zsh plugins are installed into `$HOME/.zsh/plugins/`
+and loaded by `.zshrc`:
+
+- **zsh-syntax-highlighting** — highlights commands as you typed. Loaded
+  **last** (after all other plugins and ZLE widgets) so it can wrap them
+  correctly.
+- **zsh-autosuggestions** — shows suggestions based on previous commands.
+  Accept a suggestion with `Ctrl+Space`.
+- **zsh-system-clipboard** — system clipboard integration. Requires
+  `pkg install termux-api`; without it, this plugin is skipped silently.
+
+Load order (in `.zshrc`):
+`autosuggestions → system-clipboard → zoxide → fzf → syntax-highlighting`
+
 
 ## Default login shell
 
@@ -121,12 +144,17 @@ Git integration is off by default so every prompt stays fast.
 
 ```
 $HOME/.zshenv
+$HOME/.zsh/plugins/            # cloned at install time (not in repo)
+├── zsh-autosuggestions/
+├── zsh-syntax-highlighting/
+└── zsh-system-clipboard/
 $HOME/.config/zsh/
 ├── .zshrc
 ├── config/
-│   ├── exports.zsh      # PATH and editor
-│   ├── aliases.zsh      # pkg/system/git/eza aliases (guarded)
-│   └── options.zsh      # history and completion options
+│   ├── autosuggestions.zsh   # sources zsh-autosuggestions plugin
+│   ├── exports.zsh           # PATH and editor
+│   ├── aliases.zsh           # pkg/system/git/eza aliases (guarded)
+│   └── options.zsh           # history and completion options
 ├── functions/
 │   ├── hooks.zsh        # command timing (preexec/precmd)
 │   ├── prompt.zsh       # prompt function
@@ -135,11 +163,14 @@ $HOME/.config/zsh/
 │   ├── main.zsh         # vi mode, cursor, autosuggest accept
 │   └── spf.zsh          # superfile integration (guarded)
 ├── modules/
-│   ├── fzf.zsh          # fzf init + widgets (guarded)
-│   ├── zoxide.zsh       # zoxide init (guarded)
-│   └── profiler.zsh     # zsh/zprof (optional)
+│   ├── autosuggestions.zsh   # sources zsh-autosuggestions plugin
+│   ├── fzf.zsh               # fzf init + widgets (guarded)
+│   ├── profiler.zsh          # zsh/zprof (optional)
+│   ├── syntax-highlighting.zsh  # sources zsh-syntax-highlighting (loaded last)
+│   ├── system-clipboard.zsh  # sources zsh-system-clipboard (termux-api)
+│   └── zoxide.zsh            # zoxide init (guarded)
 └── themes/
-    └── prompt.zsh       # sources the prompt function
+    └── prompt.zsh            # sources the prompt function
 ```
 
 ## Backup and restore

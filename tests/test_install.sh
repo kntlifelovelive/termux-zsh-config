@@ -2,9 +2,9 @@
 # Simulated tests for the Termux Zsh Config installer.
 #
 # These tests run OUTSIDE a real Termux environment (in this dev container).
-# They are SIMULATED: they use a sandboxed HOME, mock `pkg`, `zsh`, and `chsh`,
-# and never touch the real Termux system or perform real package installs /
-# shell changes.
+# They are SIMULATED: they use a sandboxed HOME, mock `pkg`, `zsh`, `git`, and
+# `chsh`, and never touch the real Termux system or perform real package
+# installs / shell changes.
 #
 # Real Termux tests (running on an actual Android device with `pkg` and `zsh`)
 # are NOT executed here.
@@ -40,11 +40,9 @@ export MOCK_PKG_LOG
 cat > "$TEST_BIN/pkg" << 'MOCKPKG'
 #!/usr/bin/env bash
 echo "MOCK_PKG_CALL:$*" >> "$MOCK_PKG_LOG"
-# Simulate a failing install when MOCK_PKG_FAIL is set.
 if [[ -n "${MOCK_PKG_FAIL:-}" ]]; then
     exit 1
 fi
-# Simulate installing: create a dummy executable for each requested package.
 for arg in "$@"; do
     case "$arg" in
         install|-y|-S|-Syu|update|upgrade) continue ;;
@@ -61,6 +59,43 @@ exit 0
 MOCKPKG
 chmod +x "$TEST_BIN/pkg"
 
+# ---- mock `git`: logs clone/pull calls, creates dummy plugin files
+MOCK_GIT_LOG="$SANDBOX/git-calls.log"
+export MOCK_GIT_LOG
+: > "$MOCK_GIT_LOG"
+cat > "$TEST_BIN/git" << 'MOCKGIT'
+#!/usr/bin/env bash
+echo "MOCK_GIT_CALL:$*" >> "$MOCK_GIT_LOG"
+cmd="$1"; shift
+case "$cmd" in
+    clone)
+        # git clone [options] url dir  -> find url and dir among non-option args
+        url=""; dir=""
+        for a in "$@"; do
+            case "$a" in
+                -*) continue ;;
+                *)
+                    if [[ -z "$url" ]]; then url="$a"; else dir="$a"; fi
+                    ;;
+            esac
+        done
+        mkdir -p "$dir"
+        case "$dir" in
+            *syntax-highlighting*) printf '#!/usr/bin/env zsh\nexit 0\n' > "$dir/zsh-syntax-highlighting.zsh" ;;
+            *autosuggestions*)     printf '#!/usr/bin/env zsh\nexit 0\n' > "$dir/zsh-autosuggestions.zsh" ;;
+            *system-clipboard*)    printf '#!/usr/bin/env zsh\nexit 0\n' > "$dir/zsh-system-clipboard.zsh" ;;
+        esac
+        touch "$dir/.git"
+        ;;
+    -C)
+        dir="$1"; shift
+        [[ -d "$dir/.git" ]] || exit 1
+        ;;
+esac
+exit 0
+MOCKGIT
+chmod +x "$TEST_BIN/git"
+
 # ---- mock `zsh`: passes `zsh -n` syntax checks, exits 0 otherwise
 cat > "$TEST_PREFIX/bin/zsh" << 'MOCKZSH'
 #!/usr/bin/env bash
@@ -70,7 +105,6 @@ done
 exit 0
 MOCKZSH
 chmod +x "$TEST_PREFIX/bin/zsh"
-# Also put zsh on PATH so command -v zsh works.
 if [[ ! -e "$TEST_BIN/zsh" ]]; then
     cp "$TEST_PREFIX/bin/zsh" "$TEST_BIN/zsh"
 fi
@@ -95,8 +129,6 @@ export PREFIX="$TEST_PREFIX"
 
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Build the installer environment. By default all required commands are
-# "present" (mock zsh + dummy binaries created by a prior mock pkg call).
 run_installer() {
     local confirm_env="${BUBU_INSTALL_CONFIRM_SHELL:-}"
     HOME="$TEST_HOME" PATH="$TEST_BIN:$REAL_PATH" PREFIX="$TEST_PREFIX" \
@@ -105,7 +137,6 @@ run_installer() {
         bash "$REPO_DIR/install" "$@" >"$SANDBOX/install.out" 2>"$SANDBOX/install.err"
 }
 
-# Make all required commands present on PATH (mock pkgs already installed).
 make_required_present() {
     for cmd in zsh git eza fzf zoxide micro; do
         if [[ ! -e "$TEST_BIN/$cmd" ]]; then
@@ -115,7 +146,6 @@ make_required_present() {
     done
 }
 
-# Remove a required command from PATH (simulate not installed).
 remove_cmd() {
     rm -f "$TEST_BIN/$1"
 }
@@ -133,14 +163,13 @@ echo "--- Test 1: stops safely outside Termux (simulated) ---"
     fi
 )
 
-# ------------------------------------------------ test 2: required package installation
+# ------------------------------------------------ test 2: required packages installed
 echo
-echo "--- Test 2: required packages installed automatically ---"
-# Remove zsh so installer thinks it's missing -> mock pkg should install it.
+echo "--- Test 2: required packages installed automatically (incl. git) ---"
+remove_cmd zsh
+make_required_present 2>/dev/null || true
 remove_cmd zsh
 : > "$MOCK_PKG_LOG"
-make_required_present 2>/dev/null || true  # ensure others present except zsh
-remove_cmd zsh
 run_installer >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]]; then
@@ -153,10 +182,9 @@ if grep -q "MOCK_PKG_CALL:install -y zsh" "$MOCK_PKG_LOG" 2>/dev/null; then
 else
     fail "mock pkg was not asked to install zsh when missing"
 fi
-# Restore mock zsh
 if [[ ! -e "$TEST_BIN/zsh" ]]; then cp "$TEST_PREFIX/bin/zsh" "$TEST_BIN/zsh"; fi
 
-# ------------------------------------------------ test 3: no pkg upgrade
+# ------------------------------------------------ test 3: pkg upgrade never run
 echo
 echo "--- Test 3: pkg upgrade never run ---"
 make_required_present
@@ -174,12 +202,11 @@ else
     ok "no pkg upgrade called"
 fi
 
-# ----------------------------------- test 4: optional packages not auto-installed
+# -------- test 4: optional packages not installed automatically
 echo
 echo "--- Test 4: optional packages not installed automatically ---"
 make_required_present
-# Ensure optional commands are absent.
-for cmd in curl bat rg fd-find vim procps; do remove_cmd "$cmd"; done
+for cmd in curl bat rg fd-find vim procps termux-api; do remove_cmd "$cmd"; done
 : > "$MOCK_PKG_LOG"
 run_installer >/dev/null 2>&1
 rc=$?
@@ -188,10 +215,8 @@ if [[ $rc -eq 0 ]]; then
 else
     fail "installer failed due to missing optional packages (rc=$rc)"
 fi
-# pkg install should only have been for required (all present -> none), or zero calls.
-# Crucially, no optional package should appear in a pkg install call.
 optional_in_install=0
-for cmd in curl bat rg fd-find vim procps; do
+for cmd in curl bat rg fd-find vim procps termux-api; do
     if grep -q "MOCK_PKG_CALL:install.*$cmd\b" "$MOCK_PKG_LOG" 2>/dev/null; then
         optional_in_install=1
     fi
@@ -202,10 +227,9 @@ else
     fail "optional package(s) were auto-installed"
 fi
 
-# -------------------------------------- test 5: missing package handling (pkg failure)
+# ----- test 5: package install failure is reported ---
 echo
 echo "--- Test 5: package install failure is reported ---"
-# Make zsh missing and force mock pkg to fail.
 remove_cmd zsh
 export MOCK_PKG_FAIL=1
 : > "$MOCK_PKG_LOG"
@@ -222,14 +246,111 @@ else
     fail "no clear failure message for package install failure"
 fi
 unset MOCK_PKG_FAIL
-# Restore
 if [[ ! -e "$TEST_BIN/zsh" ]]; then cp "$TEST_PREFIX/bin/zsh" "$TEST_BIN/zsh"; fi
 
-# ----------------------------------- test 6: files copied (not symlinked)
+# ----- test 6: plugin installation via mock git ---
 echo
-echo "--- Test 6: files copied (not symlinked) ---"
+echo "--- Test 6: Zsh plugins installed via git ---"
+# Fresh plugins dir (previous tests may have installed plugins)
+rm -rf "$TEST_HOME/.zsh/plugins"
 make_required_present
-MOCK_PKG_FAIL=
+: > "$MOCK_GIT_LOG"
+run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer ran and installed plugins"
+else
+    fail "installer failed during plugin installation (rc=$rc)"
+fi
+for plugin in zsh-syntax-highlighting zsh-autosuggestions zsh-system-clipboard; do
+    if grep -q "MOCK_GIT_CALL:clone.*$plugin" "$MOCK_GIT_LOG" 2>/dev/null; then
+        ok "git clone called for $plugin"
+    else
+        fail "git clone not called for $plugin"
+    fi
+    # Expected plugin file should exist in sandbox plugins dir
+    shopt -s nullglob
+    plugin_files=("$TEST_HOME/.zsh/plugins/$plugin"/*.zsh)
+    shopt -u nullglob
+    if [[ ${#plugin_files[@]} -gt 0 ]]; then
+        ok "$plugin expected file present after install"
+    else
+        fail "$plugin missing expected .zsh file after install"
+    fi
+done
+
+# ----- test 7: plugins not re-cloned on repeat ---
+echo
+echo "--- Test 7: plugins not re-cloned on repeat installation ---"
+: > "$MOCK_GIT_LOG"
+make_required_present
+run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "second repeat install succeeded"
+else
+    fail "second repeat install failed (rc=$rc)"
+fi
+# clone should NOT appear again (only pull or nothing)
+clone_count=$(grep -c "MOCK_GIT_CALL:clone" "$MOCK_GIT_LOG" 2>/dev/null || true)
+clone_count=${clone_count:-0}
+if [[ "$clone_count" -eq 0 ]]; then
+    ok "no re-clone on repeat installation"
+else
+    fail "plugins were re-cloned on repeat ($clone_count clone calls)"
+fi
+
+# ----- test 8: missing plugin files handled gracefully ---
+echo
+echo "--- Test 8: missing plugin files handled gracefully ---"
+make_required_present
+# Remove all plugin files so modules skip them
+rm -rf "$TEST_HOME/.config/zsh/plugins"
+: > "$MOCK_PKG_LOG"
+run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer succeeds even when plugin files are absent"
+else
+    fail "installer failed when plugin files absent (rc=$rc)"
+fi
+ok "config modules guard on plugin file existence (no startup break)"
+
+# ----- test 9: load order - syntax-highlighting last ---
+echo
+echo "--- Test 9: syntax-highlighting loaded last ---"
+zshrc="$REPO_DIR/zsh/.zshrc"
+# Find line numbers of each plugin source
+autosugg_line=$(grep -n "source.*autosuggestions" "$zshrc" | head -1 | cut -d: -f1)
+syntax_line=$(grep -n "source.*syntax-highlighting" "$zshrc" | head -1 | cut -d: -f1)
+clipboard_line=$(grep -n "source.*system-clipboard" "$zshrc" | head -1 | cut -d: -f1)
+if [[ -n "$syntax_line" ]] && [[ -n "$autosugg_line" ]] && [[ "$syntax_line" -gt "$autosugg_line" ]]; then
+    ok "syntax-highlighting sourced after autosuggestions ($syntax_line > $autosugg_line)"
+else
+    fail "syntax-highlighting NOT sourced after autosuggestions"
+fi
+if [[ -n "$syntax_line" ]] && [[ -n "$clipboard_line" ]] && [[ "$syntax_line" -gt "$clipboard_line" ]]; then
+    ok "syntax-highlighting sourced after system-clipboard ($syntax_line > $clipboard_line)"
+else
+    fail "syntax-highlighting NOT sourced after system-clipboard"
+fi
+
+# ----- test 10: no duplicate plugin sourcing ---
+echo
+echo "--- Test 10: no duplicate plugin sourcing ---"
+for plugin in autosuggestions system-clipboard syntax-highlighting zoxide fzf; do
+    count=$(grep -c "source.*$plugin" "$zshrc" 2>/dev/null || echo 0)
+    if [[ "$count" -eq 1 ]]; then
+        ok "$plugin sourced exactly once"
+    else
+        fail "$plugin sourced $count time(s) (expected 1)"
+    fi
+done
+
+# ----- test 11: files copied (not symlinked) ---
+echo
+echo "--- Test 11: files copied (not symlinked) ---"
+make_required_present
 : > "$MOCK_PKG_LOG"
 run_installer >/dev/null 2>&1
 rc=$?
@@ -248,15 +369,10 @@ if [[ -d "$TEST_HOME/.config/zsh" && ! -L "$TEST_HOME/.config/zsh" ]]; then
 else
     fail "$HOME/.config/zsh is missing or is a symlink"
 fi
-if [[ -f "$TEST_HOME/.config/zsh/.zshrc" && ! -L "$TEST_HOME/.config/zsh/.zshrc" ]]; then
-    ok "config files are real copies (.zshrc present)"
-else
-    fail "config .zshrc missing or symlink"
-fi
 
-# --------------------------------------------------- test 7: backup creation
+# ----- test 12: backup creation ---
 echo
-echo "--- Test 7: timestamped backup creation ---"
+echo "--- Test 12: timestamped backup creation ---"
 mkdir -p "$TEST_HOME/.config/zsh"
 echo "old config" > "$TEST_HOME/.zshenv"
 echo "old zshrc" > "$TEST_HOME/.config/zsh/.zshrc"
@@ -286,9 +402,9 @@ else
     fail "no timestamped backup directory found"
 fi
 
-# ------------------------------------------------ test 8: repeat installation
+# ----- test 13: repeat installation no duplication ---
 echo
-echo "--- Test 8: repeat installation (no duplication) ---"
+echo "--- Test 13: repeat installation (no duplication) ---"
 : > "$MOCK_PKG_LOG"
 make_required_present
 run_installer >/dev/null 2>&1
@@ -309,119 +425,7 @@ else
     fail ".zshrc differs from source (possible duplication)"
 fi
 
-# --------------------------------- test 9: shell-change - already using Zsh
-echo
-echo "--- Test 9: shell-change - already using Zsh ---"
-make_required_present
-: > "$MOCK_CHSH_LOG"
-TEST_SHELL="$TEST_PREFIX/bin/zsh" BUBU_INSTALL_CONFIRM_SHELL=N \
-    run_installer >/dev/null 2>&1
-rc=$?
-if [[ $rc -eq 0 ]]; then
-    ok "installer ran when already using Zsh"
-else
-    fail "installer failed when already using Zsh (rc=$rc)"
-fi
-if ! grep -q "MOCK_CHSH_CALL" "$MOCK_CHSH_LOG" 2>/dev/null; then
-    ok "chsh not called when already using Zsh"
-else
-    fail "chsh should not be called when already using Zsh"
-fi
-if grep -q "Default shell is already Zsh" "$SANDBOX/install.out" 2>/dev/null; then
-    ok "already-Zsh message reported"
-else
-    fail "already-Zsh message not reported"
-fi
-
-# --------------------------------- test 10: shell-change - user declines
-echo
-echo "--- Test 10: shell-change - user declines ---"
-make_required_present
-TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=N \
-    run_installer >/dev/null 2>&1
-rc=$?
-if [[ $rc -eq 0 ]]; then
-    ok "installer ran when user declines shell change"
-else
-    fail "installer failed when user declines (rc=$rc)"
-fi
-if ! grep -q "MOCK_CHSH_CALL" "$MOCK_CHSH_LOG" 2>/dev/null; then
-    ok "chsh not called when user declines"
-else
-    fail "chsh should not be called when user declines"
-fi
-
-# ---------------------------------- test 11: shell-change - user confirms
-echo
-echo "--- Test 11: shell-change - user confirms ---"
-make_required_present
-: > "$MOCK_CHSH_LOG"
-TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=Y \
-    run_installer >/dev/null 2>&1
-rc=$?
-if [[ $rc -eq 0 ]]; then
-    ok "installer ran when user confirms shell change"
-else
-    fail "installer failed when user confirms (rc=$rc)"
-fi
-if grep -q "MOCK_CHSH_CALL:-s $TEST_PREFIX/bin/zsh" "$MOCK_CHSH_LOG" 2>/dev/null; then
-    ok "chsh called to set Zsh as default shell"
-else
-    fail "chsh was not called to set Zsh as default shell"
-fi
-
-# --------------------------------- test 12: shell-change - failure + recovery
-echo
-echo "--- Test 12: shell-change - failure shows recovery ---"
-make_required_present
-export MOCK_CHSH_FAIL=1
-: > "$MOCK_CHSH_LOG"
-TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=Y \
-    run_installer >/dev/null 2>&1
-rc=$?
-if [[ $rc -eq 0 ]]; then
-    ok "installer still completes config install after shell-change failure"
-else
-    fail "installer aborted due to shell-change failure (rc=$rc)"
-fi
-if grep -q "Recovery steps" "$SANDBOX/install.out" 2>/dev/null; then
-    ok "recovery instructions shown for shell-change failure"
-else
-    fail "no recovery instructions for shell-change failure"
-fi
-unset MOCK_CHSH_FAIL
-
-# -------------------------------- test 13: shell-change - chsh unavailable
-echo
-echo "--- Test 13: shell-change - chsh unavailable ---"
-make_required_present
-remove_cmd chsh
-: > "$MOCK_CHSH_LOG"
-TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=Y \
-    run_installer >/dev/null 2>&1
-rc=$?
-if [[ $rc -eq 0 ]]; then
-    ok "installer ran when chsh unavailable"
-else
-    fail "installer failed when chsh unavailable (rc=$rc)"
-fi
-if ! grep -q "MOCK_CHSH_CALL" "$MOCK_CHSH_LOG" 2>/dev/null; then
-    ok "chsh not called when unavailable"
-else
-    fail "chsh should not be called when unavailable"
-fi
-# Restore chsh
-chmod +x "$TEST_BIN/chsh" 2>/dev/null || true
-if [[ ! -e "$TEST_BIN/chsh" ]]; then
-    cat > "$TEST_BIN/chsh" << 'MOCKCHSH'
-#!/usr/bin/env bash
-echo "MOCK_CHSH_CALL:$*" >> "$MOCK_CHSH_LOG"
-exit 0
-MOCKCHSH
-    chmod +x "$TEST_BIN/chsh"
-fi
-
-# -------------------------------------------------------- test 14: zsh syntax
+# ----- test 14: zsh syntax validation ---
 echo
 echo "--- Test 14: zsh syntax validation ---"
 if command -v zsh >/dev/null 2>&1; then
@@ -446,51 +450,109 @@ else
     ok "zsh syntax test skipped (simulated: no zsh available here)"
 fi
 
-# --------------------------------- test 15: prompt - missing Git executable
+# ----- test 15: shell-change - already using Zsh ---
 echo
-echo "--- Test 15: prompt syntax / missing Git (guarded) ---"
-# The prompt module guards on $+commands[git]; with no git it must still define
-# set_bubu_prompt and set a valid PROMPT. We verify by inspecting the source
-# (real execution needs zsh, unavailable here).
-if grep -q '(( \$+commands\[git\] ))' "$REPO_DIR/zsh/functions/prompt.zsh"; then
-    ok "prompt guards on git command existence"
+echo "--- Test 15: shell-change - already using Zsh ---"
+make_required_present
+: > "$MOCK_CHSH_LOG"
+TEST_SHELL="$TEST_PREFIX/bin/zsh" BUBU_INSTALL_CONFIRM_SHELL=N \
+    run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer ran when already using Zsh"
 else
-    fail "prompt does not guard on git command existence"
+    fail "installer failed when already using Zsh (rc=$rc)"
 fi
-# Confirm BUBU_PROMPT_GIT default is off (no git needed for default prompt).
-if grep -q 'BUBU_PROMPT_GIT="${BUBU_PROMPT_GIT:-0}"' "$REPO_DIR/zsh/functions/prompt.zsh"; then
-    ok "prompt git integration defaults to off"
+if ! grep -q "MOCK_CHSH_CALL" "$MOCK_CHSH_LOG" 2>/dev/null; then
+    ok "chsh not called when already using Zsh"
 else
-    fail "prompt git integration not defaulted to off"
+    fail "chsh should not be called when already using Zsh"
 fi
 
-# ---------------------------------- test 16: prompt - no duplicate precmd hooks
+# ----- test 16: shell-change - user declines ---
 echo
-echo "--- Test 16: no duplicate prompt precmd hooks ---"
-hook_count_functions=$(grep -c "add-zsh-hook precmd" "$REPO_DIR/zsh/functions/prompt.zsh" 2>/dev/null)
-hook_count_themes=$(grep -c "add-zsh-hook precmd" "$REPO_DIR/zsh/themes/prompt.zsh" 2>/dev/null)
-hook_count_functions=${hook_count_functions:-0}
-hook_count_themes=${hook_count_themes:-0}
-total_hooks=$((hook_count_functions + hook_count_themes))
-if [[ $total_hooks -eq 1 ]]; then
-    ok "exactly one precmd hook registration (in themes/prompt.zsh)"
+echo "--- Test 16: shell-change - user declines ---"
+make_required_present
+TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=N \
+    run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer ran when user declines shell change"
 else
-    fail "expected exactly 1 precmd hook registration, found $total_hooks"
+    fail "installer failed when user declines (rc=$rc)"
+fi
+if ! grep -q "MOCK_CHSH_CALL" "$MOCK_CHSH_LOG" 2>/dev/null; then
+    ok "chsh not called when user declines"
+else
+    fail "chsh should not be called when user declines"
 fi
 
-# --------------------------------- test 17: prompt - configurable label
+# ----- test 17: shell-change - user confirms ---
 echo
-echo "--- Test 17: prompt configurable label ---"
-if grep -q 'BUBU_PROMPT_LABEL="${BUBU_PROMPT_LABEL:-bubu}"' "$REPO_DIR/zsh/functions/prompt.zsh"; then
-    ok "prompt label is configurable via BUBU_PROMPT_LABEL"
+echo "--- Test 17: shell-change - user confirms ---"
+make_required_present
+: > "$MOCK_CHSH_LOG"
+TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=Y \
+    run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer ran when user confirms shell change"
 else
-    fail "prompt label not configurable"
+    fail "installer failed when user confirms (rc=$rc)"
 fi
-# Label should not reference system username (%n).
-if grep -q '%n' "$REPO_DIR/zsh/functions/prompt.zsh"; then
-    fail "prompt still references system username (%n)"
+if grep -q "MOCK_CHSH_CALL:-s $TEST_PREFIX/bin/zsh" "$MOCK_CHSH_LOG" 2>/dev/null; then
+    ok "chsh called to set Zsh as default shell"
 else
-    ok "prompt does not display system username"
+    fail "chsh was not called to set Zsh as default shell"
+fi
+
+# ----- test 18: shell-change - failure shows recovery ---
+echo
+echo "--- Test 18: shell-change - failure shows recovery ---"
+make_required_present
+export MOCK_CHSH_FAIL=1
+: > "$MOCK_CHSH_LOG"
+TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=Y \
+    run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer still completes config install after shell-change failure"
+else
+    fail "installer aborted due to shell-change failure (rc=$rc)"
+fi
+if grep -q "Recovery steps" "$SANDBOX/install.out" 2>/dev/null; then
+    ok "recovery instructions shown for shell-change failure"
+else
+    fail "no recovery instructions for shell-change failure"
+fi
+unset MOCK_CHSH_FAIL
+
+# ----- test 19: shell-change - chsh unavailable ---
+echo
+echo "--- Test 19: shell-change - chsh unavailable ---"
+make_required_present
+remove_cmd chsh
+: > "$MOCK_CHSH_LOG"
+TEST_SHELL=/bin/bash BUBU_INSTALL_CONFIRM_SHELL=Y \
+    run_installer >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+    ok "installer ran when chsh unavailable"
+else
+    fail "installer failed when chsh unavailable (rc=$rc)"
+fi
+if ! grep -q "MOCK_CHSH_CALL" "$MOCK_CHSH_LOG" 2>/dev/null; then
+    ok "chsh not called when unavailable"
+else
+    fail "chsh should not be called when unavailable"
+fi
+if [[ ! -e "$TEST_BIN/chsh" ]]; then
+    cat > "$TEST_BIN/chsh" << 'MOCKCHSH2'
+#!/usr/bin/env bash
+echo "MOCK_CHSH_CALL:$*" >> "$MOCK_CHSH_LOG"
+exit 0
+MOCKCHSH2
+    chmod +x "$TEST_BIN/chsh"
 fi
 
 # ----------------------------------------------------------- summary

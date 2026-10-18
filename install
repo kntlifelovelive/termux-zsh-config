@@ -25,20 +25,22 @@ stage() { printf '\n%b[%s]%b %b%s%b\n' "$BOLD$CYAN" "$1" "$RESET" "$BOLD" "$2" "
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/zsh"
 SRC_ZSHENV="$SCRIPT_DIR/.zshenv"
+PLUGINS_DIR="$HOME/.zsh/plugins"
 
 # ------------------------------------------------------------------ packages
 # Required by the default enabled features:
-#   zsh   — the shell itself
-#   git   — prompt git integration + git aliases
-#   eza   — default 'ls' replacement (aliases e/ea/el/...)
-#   fzf   — default file/folder finder keybindings (Ctrl+T / Ctrl+F)
-#   zoxide — default smarter-cd ('z' integration)
-#   micro — default editor (aliased to 'n')
+#   zsh        — the shell itself
+#   git        — needed to clone the plugin files
+#   eza        — default 'ls' replacement (aliases e/ea/el/…)
+#   fzf        — default file/folder finder keybindings (Ctrl+T / Ctrl+F)
+#   zoxide     — default smarter-cd ('z' integration)
+#   micro      — default editor (aliased to 'n')
 #
 # Genuinely optional tools (enhancements, never installed automatically):
 #   curl, bat, ripgrep, fd, vim, procps
+#   termux-api — required for zsh-system-clipboard clipboard integration
 REQUIRED_CMDS=(zsh git eza fzf zoxide micro)
-OPTIONAL_CMDS=(curl bat ripgrep fd vim procps)
+OPTIONAL_CMDS=(curl bat ripgrep fd vim procps termux-api)
 
 # Map a command name to its Termux package name.
 pkg_for() {
@@ -55,12 +57,13 @@ pkg_for() {
         fd)         echo fd-find ;;
         vim)        echo vim ;;
         procps)     echo procps ;;
+        termux-api) echo termux-api ;;
         *)          echo "$1" ;;
     esac
 }
 
-# --------------------------------------------------------------- [1/6] Termux
-stage "1/6" "Verifying Termux environment..."
+# --------------------------------------------------------------- [1/9] Termux
+stage "1/9" "Verifying Termux environment..."
 
 is_termux=0
 [[ -n "${TERMUX_VERSION:-}" ]]         && is_termux=1
@@ -78,8 +81,8 @@ fi
 
 ok "Termux environment detected"
 
-# ----------------------------------------------------------- [2/6] Dependencies
-stage "2/6" "Checking dependencies..."
+# ----------------------------------------------------------- [2/9] Dependencies
+stage "2/9" "Checking dependencies..."
 
 missing_required=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
@@ -114,8 +117,8 @@ else
     ok "Optional packages present: ${OPTIONAL_CMDS[*]}"
 fi
 
-# ------------------------------------------------------- [3/6] Validate source
-stage "3/6" "Validating source configuration..."
+# ------------------------------------------------------- [3/9] Validate source
+stage "3/9" "Validating source configuration..."
 
 src_fail=0
 src_count=0
@@ -129,8 +132,8 @@ done < <(find "$SRC_DIR" \( -name '*.zsh' -o -name '.zshrc' \) -type f)
 (( src_fail == 0 )) || exit 1
 ok "Source OK ($src_count files passed zsh -n)"
 
-# --------------------------------------------------- [4/6] Backup + copy
-stage "4/6" "Creating backup and installing..."
+# --------------------------------------------------- [4/9] Backup + copy
+stage "4/9" "Creating backup and installing..."
 
 TARGET="$HOME/.config/zsh"
 BACKUP="(none — no existing configuration)"
@@ -167,8 +170,57 @@ cp -a "$SRC_ZSHENV" "$HOME/.zshenv" || err "Could not write ~/.zshenv."
 ok "Installed: $TARGET"
 ok "Installed: $HOME/.zshenv"
 
-# ----------------------------------------------- [5/6] Validate installed
-stage "5/6" "Validating installed configuration..."
+# ------------------------------------------------------- [5/9] Install plugins
+stage "5/9" "Installing Zsh plugins..."
+
+# Plugins are cloned into $PLUGINS_DIR ($HOME/.zsh/plugins), which lives
+# outside $TARGET ($HOME/.config/zsh) so they survive config replacement.
+
+# name | repository url | file that must exist once installed
+install_plugin() {
+    local name="$1" url="$2" expected="$3"
+    local dir="$PLUGINS_DIR/$name"
+
+    if [[ -f "$dir/$expected" ]]; then
+        ok "$name already installed"
+        return 0
+    fi
+
+    if [[ -d "$dir" ]]; then
+        # Directory exists but the plugin file is missing: repair in place,
+        # never reclone over an existing installation.
+        if [[ -d "$dir/.git" ]]; then
+            info "$name: incomplete installation, updating..."
+            git -C "$dir" pull -q --ff-only ||
+                err "$name: existing installation at $dir is incomplete and could not be updated."
+        else
+            err "$name: $dir exists but is not a valid plugin installation."
+        fi
+    else
+        command -v git >/dev/null 2>&1 || err "git is required to install $name."
+        info "Cloning $name..."
+        mkdir -p "$PLUGINS_DIR" || err "Cannot create $PLUGINS_DIR."
+        git clone -q "$url" "$dir" ||
+            err "$name: clone failed ($url)."
+    fi
+
+    [[ -f "$dir/$expected" ]] ||
+        err "$name: expected file $dir/$expected is still missing."
+    ok "$name installed"
+}
+
+install_plugin zsh-syntax-highlighting \
+    https://github.com/zsh-users/zsh-syntax-highlighting.git \
+    zsh-syntax-highlighting.zsh
+install_plugin zsh-autosuggestions \
+    https://github.com/zsh-users/zsh-autosuggestions.git \
+    zsh-autosuggestions.zsh
+install_plugin zsh-system-clipboard \
+    https://github.com/kutsan/zsh-system-clipboard.git \
+    zsh-system-clipboard.zsh
+
+# ----------------------------------------------- [6/9] Validate installed
+stage "6/9" "Validating installed configuration..."
 
 inst_fail=0
 inst_count=0
@@ -197,8 +249,8 @@ if [[ $startup_rc -ne 0 ]] || [[ -n "$startup_err" ]]; then
 fi
 ok "Startup test passed (RC=0, stderr empty)"
 
-# ----------------------------------------------- [6/7] Default login shell
-stage "6/7" "Setting Zsh as the default login shell..."
+# ----------------------------------------------- [7/9] Default login shell
+stage "7/9" "Setting Zsh as the default login shell..."
 
 ZSH_PATH="$PREFIX/bin/zsh"
 
@@ -272,11 +324,12 @@ else
     fi
 fi
 
-# ----------------------------------------------------------------- [7/7] Done
-stage "7/7" "Complete"
+# ------------------------------------------------------------------ [8/9] Done
+stage "8/9" "Complete"
 echo
 printf '  %bConfig :%b %s\n' "$BOLD" "$RESET" "$TARGET"
 printf '  %bZshenv :%b %s\n' "$BOLD" "$RESET" "$HOME/.zshenv"
+printf '  %bPlugins :%b %s\n' "$BOLD" "$RESET" "$PLUGINS_DIR"
 printf '  %bBackup :%b %s\n' "$BOLD" "$RESET" "$BACKUP"
 echo
 info "Restore procedure:"
