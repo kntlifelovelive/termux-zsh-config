@@ -26,24 +26,33 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/zsh"
 SRC_ZSHENV="$SCRIPT_DIR/.zshenv"
 
-# Required package: only zsh is strictly required by the configuration.
-# Optional packages are listed separately and are never installed automatically.
-REQUIRED_CMDS=(zsh)
-OPTIONAL_CMDS=(git curl fzf zoxide eza bat ripgrep fd micro vim procps)
+# ------------------------------------------------------------------ packages
+# Required by the default enabled features:
+#   zsh   — the shell itself
+#   git   — prompt git integration + git aliases
+#   eza   — default 'ls' replacement (aliases e/ea/el/...)
+#   fzf   — default file/folder finder keybindings (Ctrl+T / Ctrl+F)
+#   zoxide — default smarter-cd ('z' integration)
+#   micro — default editor (aliased to 'n')
+#
+# Genuinely optional tools (enhancements, never installed automatically):
+#   curl, bat, ripgrep, fd, vim, procps
+REQUIRED_CMDS=(zsh git eza fzf zoxide micro)
+OPTIONAL_CMDS=(curl bat ripgrep fd vim procps)
 
 # Map a command name to its Termux package name.
 pkg_for() {
     case "$1" in
         zsh)        echo zsh ;;
         git)        echo git ;;
-        curl)       echo curl ;;
+        eza)        echo eza ;;
         fzf)        echo fzf ;;
         zoxide)     echo zoxide ;;
-        eza)        echo eza ;;
+        micro)      echo micro ;;
+        curl)       echo curl ;;
         bat)        echo bat ;;
         ripgrep)    echo rg ;;
         fd)         echo fd-find ;;
-        micro)      echo micro ;;
         vim)        echo vim ;;
         procps)     echo procps ;;
         *)          echo "$1" ;;
@@ -188,8 +197,83 @@ if [[ $startup_rc -ne 0 ]] || [[ -n "$startup_err" ]]; then
 fi
 ok "Startup test passed (RC=0, stderr empty)"
 
-# ----------------------------------------------------------------- [6/6] Done
-stage "6/6" "Complete"
+# ----------------------------------------------- [6/7] Default login shell
+stage "6/7" "Setting Zsh as the default login shell..."
+
+ZSH_PATH="$PREFIX/bin/zsh"
+
+# Ensure Zsh is installed (it is a required package, installed above).
+if [[ ! -x "$ZSH_PATH" ]]; then
+    warn "Zsh not found at $ZSH_PATH — skipping default shell setup."
+    info "Recovery: install zsh (pkg install zsh), then run: chsh -s \"$ZSH_PATH\""
+else
+    # Detect current login shell.
+    current_shell="${SHELL:-}"
+    if [[ -z "$current_shell" && -n "${USER:-}" ]]; then
+        current_shell="$(getent passwd "$USER" 2>/dev/null | awk -F: '{print $7}' || true)"
+    fi
+
+    # Verify zsh is listed in shells file if available (Termux: $PREFIX/etc/shells).
+    shells_file=""
+    if [[ -f "$PREFIX/etc/shells" ]]; then
+        shells_file="$PREFIX/etc/shells"
+    elif [[ -f /etc/shells ]]; then
+        shells_file="/etc/shells"
+    fi
+    if [[ -n "$shells_file" ]] && ! grep -qx "$ZSH_PATH" "$shells_file" 2>/dev/null; then
+        warn "$ZSH_PATH is not listed in $shells_file — chsh may reject it."
+        info "Recovery: add '$ZSH_PATH' to '$shells_file', then run: chsh -s \"$ZSH_PATH\""
+    fi
+
+    if [[ "$current_shell" == "$ZSH_PATH" ]]; then
+        ok "Default shell is already Zsh ($ZSH_PATH)"
+    elif [[ -z "$current_shell" ]]; then
+        warn "Could not detect current login shell — skipping shell change."
+        info "Recovery: run 'chsh -s \"$ZSH_PATH\"' manually to set Zsh as your login shell."
+    elif ! command -v chsh >/dev/null 2>&1; then
+        warn "chsh command not available — skipping default shell setup."
+        info "Recovery: install termux-tools, then run: chsh -s \"$ZSH_PATH\""
+    else
+        # Ask for confirmation before changing the login shell.
+        # In non-interactive runs (tests, piped stdin) default to 'N' unless
+        # BUBU_INSTALL_CONFIRM_SHELL is set.
+        printf '\n%b?%b Change default login shell to Zsh?\n' "$BOLD$YELLOW" "$RESET"
+        printf '  Current: %s\n' "$current_shell"
+        printf '  Target:  %s\n' "$ZSH_PATH"
+        if [[ -t 0 && -z "${BUBU_INSTALL_CONFIRM_SHELL:-}" ]]; then
+            printf '  %b[y/N]%b ' "$BOLD" "$RESET"
+            read -r confirm
+        elif [[ -n "${BUBU_INSTALL_CONFIRM_SHELL:-}" ]]; then
+            confirm="$BUBU_INSTALL_CONFIRM_SHELL"
+            info "Confirm via BUBU_INSTALL_CONFIRM_SHELL: $confirm"
+        else
+            confirm="N"
+            info "Non-interactive run — defaulting to 'N' (no shell change)."
+        fi
+        confirm="${confirm:-N}"
+
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            if chsh -s "$ZSH_PATH" 2>/dev/null; then
+                ok "Default shell changed to Zsh ($ZSH_PATH)"
+                info "The change takes effect in new login sessions (not this one)."
+            else
+                shell_rc=$?
+                warn "Shell change failed (chsh exit code $shell_rc)."
+                info "Recovery steps:"
+                info "  1. Ensure zsh is installed:   pkg install zsh"
+                info "  2. Ensure $ZSH_PATH is executable."
+                info "  3. Ensure $ZSH_PATH is listed in your shells file ($shells_file)."
+                info "  4. Run manually:  chsh -s \"$ZSH_PATH\""
+            fi
+        else
+            info "Shell change skipped by user — configuration still installed."
+            info "To set Zsh manually later:  chsh -s \"$ZSH_PATH\""
+        fi
+    fi
+fi
+
+# ----------------------------------------------------------------- [7/7] Done
+stage "7/7" "Complete"
 echo
 printf '  %bConfig :%b %s\n' "$BOLD" "$RESET" "$TARGET"
 printf '  %bZshenv :%b %s\n' "$BOLD" "$RESET" "$HOME/.zshenv"
@@ -202,5 +286,6 @@ echo
 info "Start a new zsh session to use the configuration."
 info "Optional packages: pkg install ${OPTIONAL_CMDS[*]}"
 echo
-info "The installer does NOT change your default shell. Use 'chsh -s zsh' manually if desired."
+info "The installer does NOT change your default shell without your confirmation."
+info "If you declined, run 'chsh -s \"$PREFIX/bin/zsh\"' manually when ready."
 exit 0

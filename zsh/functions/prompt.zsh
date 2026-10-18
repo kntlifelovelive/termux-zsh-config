@@ -1,43 +1,44 @@
 # ~/.config/zsh/functions/prompt.zsh
-# Prompt function definition (Termux).
-# Registered as a precmd hook by themes/prompt.zsh.
+# Compact, dark-terminal-friendly prompt for Termux.
+# Display label is configurable via BUBU_PROMPT_LABEL (default "bubu").
+# Git integration is optional via BUBU_PROMPT_GIT=1 (off by default for speed).
+
+# Configurable display label (override before sourcing, e.g. in exports.zsh).
+BUBU_PROMPT_LABEL="${BUBU_PROMPT_LABEL:-bubu}"
+
+# Enable short git branch in prompt (0 = off by default to stay lightweight).
+BUBU_PROMPT_GIT="${BUBU_PROMPT_GIT:-0}"
 
 function set_bubu_prompt() {
     local exit_code=$?
-    local git_branch=""
-    local prompt_symbol=">"
-    local venv_name=""
+    local symbol="%F{magenta}❯%f"
+    local git_part=""
 
-    # Detect active Python virtual environment.
-    if [[ -n "$VIRTUAL_ENV" ]]; then
-        venv_name="(%F{green}\uf499 $(basename "$VIRTUAL_ENV")%f) "
-    elif [[ -n "$CONDA_DEFAULT_ENV" ]]; then
-        venv_name="(%F{green}\uf499 $CONDA_DEFAULT_ENV%f) "
+    # Symbol color reflects the last command's exit status.
+    if [[ $exit_code -ne 0 ]]; then
+        symbol="%F{red}❯%f"
     fi
 
-    # Git branch & dirty check (skip entirely when git is not installed).
-    if (( $+commands[git] )) && git rev-parse --git-dir >/dev/null 2>&1; then
-        local branch_name
-        branch_name=$(git branch --show-current 2>/dev/null)
-        git_branch=" %F{cyan}\uf428%f %F{blue}${branch_name}%f"
-
-        if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
-            git_branch=" %F{red}\uf428%f %F{blue}${branch_name}%f"
+    # Optional, short git branch (guarded: git must exist and cwd is a repo).
+    if [[ $BUBU_PROMPT_GIT -eq 1 ]] && (( $+commands[git] )); then
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            local branch dirty=""
+            branch="$(git branch --show-current 2>/dev/null)"
+            if [[ -n "$branch" ]]; then
+                # Keep long branch names short and unobtrusive.
+                if [[ ${#branch} -gt 18 ]]; then
+                    branch="${branch:0:15}..."
+                fi
+                if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+                    dirty="%F{red}●%f"
+                fi
+                git_part=" %F{blue}(${branch})${dirty}%f"
+            fi
         fi
     fi
 
-    # Command error check (arrow color reflects exit status only).
-    if [[ $exit_code -ne 0 ]]; then
-        prompt_symbol="%F{red}>%f"
-    fi
-
-    # User color.
-    if [[ $EUID -eq 0 ]]; then
-        user_color="%F{red}"
-    else
-        user_color="%F{220}%B"
-    fi
-
-    PROMPT="%F{magenta}\u2502(${venv_name}${user_color}%n%f%F{magenta})-[%F{cyan}~%f%F{magenta}]${git_branch}
-%F{magenta}\u2514${prompt_symbol} %f"
+    # Two clean lines: box + label + cwd, then arrow.
+    # %~ is native Zsh: cwd with $HOME shortened to ~.
+    PROMPT="%F{magenta}┌─(%F{green}${BUBU_PROMPT_LABEL}%f%F{magenta})-[%F{cyan}%~%f%F{magenta}]${git_part}
+%F{magenta}└─${symbol} %f"
 }
