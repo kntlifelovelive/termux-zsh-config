@@ -252,11 +252,19 @@ ok "Startup test passed (RC=0, stderr empty)"
 # ----------------------------------------------- [7/9] Default login shell
 stage "7/9" "Setting Zsh as the default login shell..."
 
-ZSH_PATH="$PREFIX/bin/zsh"
+# Determine the zsh path robustly: prefer command -v zsh (avoids $PREFIX
+# path-doubling on setups where $PREFIX already ends in /bin).
+if command -v zsh >/dev/null 2>&1; then
+    ZSH_PATH="$(command -v zsh)"
+else
+    ZSH_PATH="$PREFIX/bin/zsh"
+fi
+# Normalize: collapse any double slashes.
+ZSH_PATH="${ZSH_PATH//\/\///}"
 
-# Ensure Zsh is installed (it is a required package, installed above).
+# Ensure Zsh is installed and executable at the resolved path.
 if [[ ! -x "$ZSH_PATH" ]]; then
-    warn "Zsh not found at $ZSH_PATH — skipping default shell setup."
+    warn "Zsh not executable at $ZSH_PATH — skipping default shell setup."
     info "Recovery: install zsh (pkg install zsh), then run: chsh -s \"$ZSH_PATH\""
 else
     # Detect current login shell.
@@ -340,5 +348,5 @@ info "Start a new zsh session to use the configuration."
 info "Optional packages: pkg install ${OPTIONAL_CMDS[*]}"
 echo
 info "The installer does NOT change your default shell without your confirmation."
-info "If you declined, run 'chsh -s \"$PREFIX/bin/zsh\"' manually when ready."
+info "If you declined, run 'chsh -s \"$(command -v zsh)\"' manually when ready."
 exit 0

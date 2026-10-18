@@ -92,12 +92,12 @@ After installing the configuration, the installer offers to set Zsh as your
 default login shell:
 
 ```bash
-chsh -s "$PREFIX/bin/zsh"
+chsh -s "$(command -v zsh)"
 ```
 
 It will:
 
-1. Confirm Zsh is installed and executable at `$PREFIX/bin/zsh`.
+1. Confirm Zsh is installed and executable (resolved via `command -v zsh`).
 2. Detect your current login shell.
 3. Check that Zsh is listed in your shells file
    (`$PREFIX/etc/shells` or `/etc/shells`).

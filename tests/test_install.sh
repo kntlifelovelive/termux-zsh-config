@@ -455,7 +455,7 @@ echo
 echo "--- Test 15: shell-change - already using Zsh ---"
 make_required_present
 : > "$MOCK_CHSH_LOG"
-TEST_SHELL="$TEST_PREFIX/bin/zsh" BUBU_INSTALL_CONFIRM_SHELL=N \
+TEST_SHELL="$TEST_BIN/zsh" BUBU_INSTALL_CONFIRM_SHELL=N \
     run_installer >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]]; then
@@ -500,7 +500,7 @@ if [[ $rc -eq 0 ]]; then
 else
     fail "installer failed when user confirms (rc=$rc)"
 fi
-if grep -q "MOCK_CHSH_CALL:-s $TEST_PREFIX/bin/zsh" "$MOCK_CHSH_LOG" 2>/dev/null; then
+if grep -q "MOCK_CHSH_CALL:-s $TEST_BIN/zsh" "$MOCK_CHSH_LOG" 2>/dev/null; then
     ok "chsh called to set Zsh as default shell"
 else
     fail "chsh was not called to set Zsh as default shell"
